@@ -283,10 +283,11 @@ def get_model_path(run, date, save_dirs, recent=-1, index_load=None):
             save_path = save_dir + date + '/run' + str(run)
             # Find all files in the model folder of the base directory
             list_of_files = listdir(save_path + '/model')
+            print(f"Files in model directory: {list_of_files}")
 
             if index_load is None:
                 # Find the most latest training iteration
-                index = find_most_recent(list_of_files, ['.index'], None, recent=recent)
+                index = find_most_recent(list_of_files, ['tem'], None, recent=recent) #from .index
             else:
                 index = index_load if any([index_load in x for x in list_of_files]) else None
 
@@ -295,6 +296,12 @@ def get_model_path(run, date, save_dirs, recent=-1, index_load=None):
                 print('Run folder found, but no training iterations!')
                 pass
             else:
+                # Check for .h5 files
+                h5_files = [file for file in list_of_files if file.endswith('.h5')]
+                if not h5_files:
+                    print('No .h5 files found in the model directory.')
+                else:
+                    print(f".h5 files found: {h5_files}")
                 # Return the save_dir (the base directory for storing training runs - not save_path!)
                 return save_dir, index
         except FileNotFoundError:

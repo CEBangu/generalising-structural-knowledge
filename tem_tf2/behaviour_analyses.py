@@ -78,10 +78,10 @@ def get_model(model_path, script_path, save_path, index, use_old_scripts=True):
     Load a trained model from a previous training run and save outputs
     """
     # Make sure there is a trained model for the requested index (training iteration)
-    if os.path.isfile(model_path + '/tem_' + str(index) + '.index'):
-        model_path = model_path + '/tem_' + str(index)
-    elif os.path.isfile(model_path + '/tem_checkpoint_' + str(index) + '.index'):
-        model_path = model_path + '/tem_checkpoint_' + str(index)
+    if os.path.isfile(model_path + '/tem_' + str(index) + '.weights.h5'):
+        model_path = model_path + '/tem_' + str(index) + '.weights.h5'
+    elif os.path.isfile(model_path + '/tem_checkpoint_' + str(index) + '.weights.h5'):
+        model_path = model_path + '/tem_checkpoint_' + str(index) + '.weights.h5'
     else:
         print('Error: no trained model found for ' + model_path + '/tem_' + str(index) + '.index')
         print('Error: no trained model found for ' + model_path + '/tem_checkpoint_' + str(index) + '.index')
@@ -108,6 +108,15 @@ def get_model(model_path, script_path, save_path, index, use_old_scripts=True):
         # Create a new tem model with the loaded parameters
         model = stored_tem.TEM(params)
         # Load the model weights after training
+        model.build({
+                    "x": (model.par["seq_len"], None, model.par["s_size"]),
+                    "x_two_hot": (model.par["seq_len"], None, model.two_hot_mat),
+                    "d": (model.par["seq_len"], None, model.par["n_actions"]),
+                    "g": (None, model.par["g_size"]),
+                    "x_": (None, model.par["s_size_comp"]),
+                    "hebb_mat": (None, model.par["p_size"], model.par["p_size"]),
+                    "hebb_mat_inv": (None, model.par["p_size"], model.par["p_size"])
+                    })
         model.load_weights(model_path)
         # Return loaded and trained model
         return model, params

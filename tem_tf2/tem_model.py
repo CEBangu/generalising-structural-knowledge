@@ -8,7 +8,7 @@ import model_utils
 
 import numpy as np
 import tensorflow as tf
-from tensorflow.keras.layers import Dense
+from tensorflow.keras.layers import Dense, InputLayer
 
 eps = model_utils.eps
 
@@ -18,10 +18,10 @@ class TEM(tf.keras.Model):
         super(TEM, self).__init__()
 
         self.par = par
-        self.precision = tf.float32 if 'precision' not in self.par else self.par.precision
+        self.precision = tf.float32 if 'precision' not in self.par else self.par['precision']
         self.mask = tf.constant(par.mask_p, dtype=self.precision, name='mask_p')
         self.mask_g = tf.constant(par.mask_g, dtype=self.precision, name='mask_g')
-        self.batch_size = self.par.batch_size
+        self.batch_size = self.par['batch_size']
         self.scalings = None  # JW: probs need to change this
         self.seq_pos = tf.zeros(self.batch_size, dtype=self.precision, name='seq_pos')
         if 'two_hot_mat' in par:
@@ -29,74 +29,81 @@ class TEM(tf.keras.Model):
 
         # Create trainable parameters
         glorot_uniform = tf.keras.initializers.GlorotUniform()
-        trunc_norm_p2g = tf.initializers.TruncatedNormal(stddev=self.par.p2g_init)
-        trunc_norm_g = tf.initializers.TruncatedNormal(stddev=self.par.g_init)
+        trunc_norm_p2g = tf.initializers.TruncatedNormal(stddev=self.par['p2g_init'])
+        trunc_norm_g = tf.initializers.TruncatedNormal(stddev=self.par['g_init'])
 
         # filtering constants
         self.gamma = [
-            tf.Variable(np.log(self.par.freqs[f] / (1 - self.par.freqs[f])), dtype=self.precision, trainable=True,
-                        name='gamma_' + str(f)) for f in range(self.par.n_freq)]
+            tf.Variable(np.log(self.par['freqs'][f] / (1 - self.par['freqs'][f])), dtype=self.precision, trainable=True,
+                        name='gamma_' + str(f)) for f in range(self.par['n_freq'])]
         # Entorhinal preference weights
         self.w_x = tf.Variable(1.0, dtype=self.precision, trainable=True, name='w_x')
         # Entorhinal preference bias
-        self.b_x = tf.Variable(tf.zeros_initializer()(shape=self.par.s_size_comp, dtype=self.precision), trainable=True,
+        self.b_x = tf.Variable(tf.zeros_initializer()(shape=self.par['s_size_comp'], dtype=self.precision), trainable=True,
                                name='bias_x')
         # Frequency module specific scaling of sensory experience before input to hippocampus
         self.w_p = [tf.Variable(1.0, dtype=self.precision, trainable=True, name='w_p_' + str(f)) for f in
-                    range(self.par.n_freq)]
+                    range(self.par['n_freq'])]
 
         # g_prior mu
-        self.g_prior_mu = tf.Variable(trunc_norm_g(shape=(1, self.par.g_size), dtype=self.precision), trainable=True,
+        self.g_prior_mu = tf.Variable(trunc_norm_g(shape=(1, self.par['g_size']), dtype=self.precision), trainable=True,
                                       name='g_prior_mu')
         # g_prior logsig
-        self.g_prior_logsig = tf.Variable(trunc_norm_g(shape=(1, self.par.g_size), dtype=self.precision),
+        self.g_prior_logsig = tf.Variable(trunc_norm_g(shape=(1, self.par['g_size']), dtype=self.precision),
                                           trainable=True, name='g_prior_logsig')
 
         self.g_init = None
 
         # MLP for transition weights
-        self.t_vec = tf.keras.Sequential([Dense(self.par.d_mixed_size, input_shape=(self.par.n_actions,),
-                                                activation=tf.tanh, kernel_initializer=glorot_uniform, name='t_vec_1',
-                                                use_bias=False), Dense(self.par.g_size ** 2, use_bias=False,
-                                                                       kernel_initializer=tf.zeros_initializer,
-                                                                       name='t_vec_2')])
-
+        self.t_vec = tf.keras.Sequential([
+            tf.keras.layers.Input(shape=(self.par['n_actions'],)),  # Explicit input layer
+            Dense(self.par['d_mixed_size'], activation=tf.tanh, kernel_initializer=glorot_uniform, name='t_vec_1', use_bias=False),
+            Dense(self.par['g_size'] ** 2, use_bias=False, kernel_initializer=tf.zeros_initializer, name='t_vec_2')
+            ])
+        
         # p2g
-        if 'p' in self.par.infer_g_type:
-            self.p2g_mu = [tf.keras.Sequential([Dense(2 * g_size, input_shape=(phase_size,), activation=tf.nn.elu,
-                                                      name='p2g_mu_1_' + str(f), kernel_initializer=glorot_uniform),
-                                                Dense(g_size, name='p2g_mu_2_' + str(f),
-                                                      kernel_initializer=trunc_norm_p2g)]) for f, (g_size, phase_size)
-                           in enumerate(zip(self.par.n_grids_all, self.par.n_phases_all))]
+        if 'p' in self.par['infer_g_type']:
+            self.p2g_mu = [
+                tf.keras.Sequential([
+                    tf.keras.layers.Input(shape=(phase_size,)),  # Explicit input layer
+                    Dense(2 * g_size, activation=tf.nn.elu, name='p2g_mu_1_' + str(f), kernel_initializer=glorot_uniform),
+                    Dense(g_size, name='p2g_mu_2_' + str(f), kernel_initializer=trunc_norm_p2g)
+                ])
+                for f, (g_size, phase_size) in enumerate(zip(self.par['n_grids_all'], self.par['n_phases_all']))
+            ]
 
-            self.p2g_logsig = [tf.keras.Sequential([Dense(2 * g_size, input_shape=(2,), activation=tf.nn.elu,
-                                                          kernel_initializer=glorot_uniform,
-                                                          name='p2g_logsig_1_' + str(f)),
-                                                    Dense(g_size, kernel_initializer=glorot_uniform, activation=tf.tanh,
-                                                          name='p2g_logsig_2_' + str(f))]) for f, g_size in
-                               enumerate(self.par.n_grids_all)]
+            self.p2g_logsig = [
+                tf.keras.Sequential([
+                    tf.keras.layers.Input(shape=(2,)),  # Explicit input layer
+                    Dense(2 * g_size, activation=tf.nn.elu, kernel_initializer=glorot_uniform, name='p2g_logsig_1_' + str(f)),
+                    Dense(g_size, kernel_initializer=glorot_uniform, activation=tf.tanh, name='p2g_logsig_2_' + str(f))
+                ])
+                for f, g_size in enumerate(self.par['n_grids_all'])
+            ]
 
         # g2g logsigs
-        self.g2g_logsig_inf = [tf.keras.Sequential([Dense(2 * g_size, input_shape=(g_size,), activation=tf.nn.elu,
-                                                          kernel_initializer=glorot_uniform,
-                                                          name='g2g_logsig_inf_1_' + str(f)),
-                                                    Dense(g_size, activation=tf.tanh, kernel_initializer=glorot_uniform,
-                                                          name='g2g_logsig_inf_2_' + str(f))]) for f, g_size in
-                               enumerate(self.par.n_grids_all)]
+            self.g2g_logsig_inf = [
+                tf.keras.Sequential([
+                    tf.keras.layers.Input(shape=(g_size,)),  # Explicit input layer
+                    Dense(2 * g_size, activation=tf.nn.elu, kernel_initializer=glorot_uniform, name='g2g_logsig_inf_1_' + str(f)),
+                    Dense(g_size, activation=tf.tanh, kernel_initializer=glorot_uniform, name='g2g_logsig_inf_2_' + str(f))
+                ])
+                for f, g_size in enumerate(self.par['n_grids_all'])
+            ]
 
         # MLP for compressing sensory observation
-        if not self.par.two_hot:
-            self.MLP_c = tf.keras.Sequential([Dense(self.par.s_size_comp_hidden, input_shape=(self.par.s_size,),
-                                                    activation=tf.nn.elu, kernel_initializer=glorot_uniform,
-                                                    name='MLP_c_1'),
-                                              Dense(self.par.s_size_comp, kernel_initializer=glorot_uniform,
-                                                    name='MLP_c_2')])
+        if not self.par['two_hot']:
+            self.MLP_c = tf.keras.Sequential([
+                tf.keras.layers.Input(shape=(self.par['s_size'],)),  # Explicit input layer
+                Dense(self.par['s_size_comp_hidden'], activation=tf.nn.elu, kernel_initializer=glorot_uniform, name='MLP_c_1'),
+                Dense(self.par['s_size_comp'], kernel_initializer=glorot_uniform, name='MLP_c_2')
+            ])
 
-        self.MLP_c_star = tf.keras.Sequential([Dense(self.par.s_size_comp_hidden, input_shape=(self.par.s_size_comp,),
-                                                     activation=tf.nn.elu, kernel_initializer=glorot_uniform,
-                                                     name='MLP_c_star_1'),
-                                               Dense(self.par.s_size, kernel_initializer=glorot_uniform,
-                                                     name='MLP_c_star_2')])
+        self.MLP_c_star = tf.keras.Sequential([
+            tf.keras.layers.Input(shape=(self.par['s_size_comp'],)),  # Explicit input layer
+            Dense(self.par['s_size_comp_hidden'], activation=tf.nn.elu, kernel_initializer=glorot_uniform, name='MLP_c_star_1'),
+            Dense(self.par['s_size'], kernel_initializer=glorot_uniform, name='MLP_c_star_2')
+        ])
 
     @model_utils.define_scope
     def call(self, inputs, training=None, mask=None):
@@ -110,7 +117,7 @@ class TEM(tf.keras.Model):
 
         # book-keeping
         g_t, x_t = inputs.g, inputs.x_
-        for i in tf.range(self.par.seq_len, name='iteration') if self.par.tf_range else range(self.par.seq_len):
+        for i in tf.range(self.par['seq_len'], name='iteration') if self.par['tf_range'] else range(self.par['seq_len']):
             # tf.range turns everything into tensors. Be careful with that! E.g. in mem_step use 'gen', 'inf'
             # tf.range (and tf in general) is slow with conditionals. Don't use where possible
             # using and appending to lists is slow with tf.range
@@ -142,7 +149,7 @@ class TEM(tf.keras.Model):
     @model_utils.define_scope
     def step(self, inputs, g_t, x_t, variable_dict, memories_dict, i, t_mat, mem_offset=0):
         # with tf.range and in graph mode, can't make the 'i' variable a global. So pass seq_pos, and i
-        seq_pos = inputs.seq_i * self.par.seq_len + tf.cast(i, self.precision)
+        seq_pos = inputs.seq_i * self.par['seq_len'] + tf.cast(i, self.precision)
 
         # generative transition
         g_gen, g2g_all = self.gen_g(g_t, t_mat, seq_pos)
@@ -224,8 +231,8 @@ class TEM(tf.keras.Model):
         """
         mem_seq_len = memories_dict['gen']['a'].shape[-1]
 
-        forget_mat = (self.scalings.forget * self.par.lambd) ** mem_seq_len
-        forget_vec = (self.scalings.forget * self.par.lambd) ** tf.constant(np.arange(mem_seq_len)[::-1],
+        forget_mat = (self.scalings['forget'] * self.par['lambd']) ** mem_seq_len
+        forget_vec = (self.scalings['forget'] * self.par['lambd']) ** tf.constant(np.arange(mem_seq_len)[::-1],
                                                                             shape=(1, 1, mem_seq_len),
                                                                             dtype=self.precision)
 
@@ -233,14 +240,14 @@ class TEM(tf.keras.Model):
         mem_b = memories_dict['gen']['b']
 
         h_mat_new = h_mat * forget_mat + tf.matmul(mem_b, tf.transpose(mem_a, perm=(0, 2, 1))) * self.mask
-        h_mat_new_ = tf.clip_by_value(h_mat_new, -self.par.hebb_lim, self.par.hebb_lim, name='h_mat')
+        h_mat_new_ = tf.clip_by_value(h_mat_new, -self.par['hebb_lim'], self.par['hebb_lim'], name='h_mat')
 
-        if 'p' in self.par.infer_g_type:
+        if 'p' in self.par['infer_g_type']:
             mem_e = memories_dict['inf']['a'] * forget_vec
             mem_f = memories_dict['inf']['b']
 
             h_mat_inv_new = h_mat_inv * forget_mat + tf.matmul(mem_f, tf.transpose(mem_e, perm=(0, 2, 1)))
-            h_mat_inv_new_ = tf.clip_by_value(h_mat_inv_new, -self.par.hebb_lim, self.par.hebb_lim, name='h_mat_inv')
+            h_mat_inv_new_ = tf.clip_by_value(h_mat_inv_new, -self.par['hebb_lim'], self.par['hebb_lim'], name='h_mat_inv')
 
             return h_mat_new_, h_mat_inv_new_
         else:
@@ -263,7 +270,7 @@ class TEM(tf.keras.Model):
         mu, sigma = g2g_all
 
         # Inference - factorised posteriors
-        if 'p' in self.par.infer_g_type:
+        if 'p' in self.par['infer_g_type']:
             mu_p2g, sigma_p2g, p_x = self.p2g(mu_x2p, x, memories)
             _, mu, _, sigma = model_utils.combine2(mu, mu_p2g, sigma, sigma_p2g, self.batch_size)
 
@@ -302,9 +309,9 @@ class TEM(tf.keras.Model):
 
         # sum over senses
         mu_attractor_sensum = tf.reduce_mean(
-            tf.reshape(p_x, (self.batch_size, self.par.tot_phases, self.par.s_size_comp)), axis=2)
+            tf.reshape(p_x, (self.batch_size, self.par['tot_phases'], self.par['s_size_comp'])), axis=2)
 
-        mu_attractor_sensum_ = tf.split(mu_attractor_sensum, num_or_size_splits=self.par.n_phases_all, axis=1)
+        mu_attractor_sensum_ = tf.split(mu_attractor_sensum, num_or_size_splits=self.par['n_phases_all'], axis=1)
 
         mus = [self.p2g_mu[f](x) for f, x in enumerate(mu_attractor_sensum_)]
         mu = self.activation(tf.concat(mus, axis=1), 'g')
@@ -317,10 +324,10 @@ class TEM(tf.keras.Model):
                         in mus]
 
         logsigmas = [self.p2g_logsig[i](x) for i, x in enumerate(logsig_input)]
-        logsigma = tf.concat(logsigmas, axis=1) * self.par.logsig_ratio + self.par.logsig_offset
+        logsigma = tf.concat(logsigmas, axis=1) * self.par['logsig_ratio'] + self.par['logsig_offset']
 
         # ignore p2g at beginning when memories crap
-        sigma = tf.exp(logsigma) + (1 - self.scalings.p2g_use) * self.par.p2g_sig_val
+        sigma = tf.exp(logsigma) + (1 - self.scalings['p2g_use']) * self.par['p2g_sig_val']
 
         return mu, sigma, p_x
 
@@ -334,7 +341,7 @@ class TEM(tf.keras.Model):
         :param d: current direction
         :return: input to place cell layer
         """
-        if self.par.two_hot:
+        if self.par['two_hot']:
             # if using two hot encoding of sensory stimuli
             x_comp = x_two_hot
         else:
@@ -360,16 +367,16 @@ class TEM(tf.keras.Model):
         g2p_ = self.g_downsample(g)
 
         # repeat to get same dimension as hippocampus - same as applying W_repeat
-        g2p = model_utils.tf_repeat_axis_1(g2p_, self.par.s_size_comp, self.par.p_size)
+        g2p = model_utils.tf_repeat_axis_1(g2p_, self.par['s_size_comp'], self.par['p_size'])
 
         return g2p
 
     @model_utils.define_scope
     def g_downsample(self, g):
         # split into frequencies
-        gs = tf.split(g, num_or_size_splits=self.par.n_grids_all, axis=1)
+        gs = tf.split(g, num_or_size_splits=self.par['n_grids_all'], axis=1)
         # down-sampling - only take a subsection of grid cells
-        gs_ = [grids[:, :self.par.n_phases_all[freq]] for freq, grids in enumerate(gs)]
+        gs_ = [grids[:, :self.par['n_phases_all'][freq]] for freq, grids in enumerate(gs)]
         g2p_ = tf.concat(gs_, axis=1)
         return g2p_
 
@@ -384,14 +391,14 @@ class TEM(tf.keras.Model):
         """
 
         x_s = []
-        for f in range(self.par.n_freq):
+        for f in range(self.par['n_freq']):
             # get filtering parameter for each frequency
             # inverse sigmoid as initial parameters
             a = tf.sigmoid(self.gamma[f])
 
             # filter
             filtered = a * x_[f] + x * (1 - a)
-            if self.par.smooth_only_on_movement:
+            if self.par['smooth_only_on_movement']:
                 # only filter if actually moved
                 stay_still = tf.reduce_sum(d, axis=1, keepdims=True)
                 filtered = filtered * stay_still + (1 - stay_still) * x_[f]
@@ -407,8 +414,8 @@ class TEM(tf.keras.Model):
         :return:
         """
         # scale by w_p and tile to have appropriate place cell size (same as W_tile)
-        mus = [tf.tile(tf.sigmoid(self.w_p[f]) * x_[f], (1, self.par.n_phases_all[f])) for f in
-               range(self.par.n_freq)]
+        mus = [tf.tile(tf.sigmoid(self.w_p[f]) * x_[f], (1, self.par['n_phases_all'][f])) for f in
+               range(self.par['n_freq'])]
 
         mu = tf.concat(mus, 1)
 
@@ -472,13 +479,13 @@ class TEM(tf.keras.Model):
         mu = self.activation(mu, 'g')
 
         # get variance
-        gs = tf.split(tf.stop_gradient(g), num_or_size_splits=self.par.n_grids_all, axis=1)
+        gs = tf.split(tf.stop_gradient(g), num_or_size_splits=self.par['n_grids_all'], axis=1)
 
         if name == 'gen':
             logsig = 0.0  # [self.g2g_logsig_gen[f](x) for f, x in enumerate(gs)]
         elif name == 'inf':
             logsigs = [self.g2g_logsig_inf[f](x) for f, x in enumerate(gs)]
-            logsig = tf.concat(logsigs, axis=1) * self.par.logsig_ratio + self.par.logsig_offset
+            logsig = tf.concat(logsigs, axis=1) * self.par['logsig_ratio'] + self.par['logsig_offset']
         else:
             raise ValueError('Incorrect name given')
 
@@ -494,7 +501,7 @@ class TEM(tf.keras.Model):
         """
 
         mu = self.g_init if self.g_init is not None else tf.tile(self.g_prior_mu, [self.batch_size, 1])
-        logsig = tf.tile(self.g_prior_logsig, [self.batch_size, 1]) + self.par.logsig_offset  # JW: diff
+        logsig = tf.tile(self.g_prior_logsig, [self.batch_size, 1]) + self.par['logsig_offset']  # JW: diff
 
         sigma = tf.exp(logsig)
 
@@ -505,7 +512,7 @@ class TEM(tf.keras.Model):
         # get transition matrix based on relationship / action
         t_vec = self.t_vec(d)
         # turn vector into matrix
-        trans_all = tf.reshape(t_vec, [self.batch_size, self.par.g_size, self.par.g_size])
+        trans_all = tf.reshape(t_vec, [self.batch_size, self.par['g_size'], self.par['g_size']])
         # apply mask - i.e. if hierarchically or only transition within frequency
         return trans_all * self.mask_g
 
@@ -523,12 +530,12 @@ class TEM(tf.keras.Model):
         :param p: place cells
         :return: sensory predictions
         """
-        ps = tf.split(value=p, num_or_size_splits=self.par.n_place_all, axis=1)
+        ps = tf.split(value=p, num_or_size_splits=self.par['n_place_all'], axis=1)
 
         # same as W_tile^T
         x_s = tf.reduce_sum(
-            tf.reshape(ps[self.par.prediction_freq], (self.batch_size, self.par.n_phases_all[
-                self.par.prediction_freq], self.par.s_size_comp)), axis=1)
+            tf.reshape(ps[self.par['prediction_freq']], (self.batch_size, self.par['n_phases_all'][
+                self.par['prediction_freq']], self.par['s_size_comp'])), axis=1)
 
         x_logits_ = self.w_x * x_s + self.b_x
         # decompress sensory
@@ -552,15 +559,15 @@ class TEM(tf.keras.Model):
         shape_p = init.shape
 
         p = self.activation(init, 'p')
-        p_f = tf.split(p, num_or_size_splits=self.par.n_place_all, axis=1)
+        p_f = tf.split(p, num_or_size_splits=self.par['n_place_all'], axis=1)
 
-        for i in range(self.par.n_recurs):
+        for i in range(self.par['n_recurs']):
             # get Hebbian update
             update = self.hebb_scal_prod(p, i, memories)
 
             # Do attractor step
             for f in memories['attractor_freq_iterations'][i]:
-                p_f[f] = self.f_p_freq(self.par.kappa * p_f[f] + update[f], f)
+                p_f[f] = self.f_p_freq(self.par['kappa'] * p_f[f] + update[f], f)
 
             p = tf.ensure_shape(tf.concat(p_f, axis=1), shape_p)
 
@@ -580,12 +587,12 @@ class TEM(tf.keras.Model):
         """
 
         p_ = tf.expand_dims(p, axis=1)
-        ps = tf.split(p, num_or_size_splits=self.par.n_place_all, axis=1)
+        ps = tf.split(p, num_or_size_splits=self.par['n_place_all'], axis=1)
 
         updates_poss = self.hebb_scal_prod_helper(memories, ps, it_num)
 
         # when converting to graph, if using lists and conditionals -  tf.cond gets funny if list len not predefined
-        updates = [tf.zeros((self.batch_size, self.par.n_place_all[freq])) for freq in range(self.par.n_freq)]
+        updates = [tf.zeros((self.batch_size, self.par['n_place_all'][freq])) for freq in range(self.par['n_freq'])]
 
         # get Hebbian updates
         for freq in memories['attractor_freq_iterations'][it_num]:
@@ -604,13 +611,13 @@ class TEM(tf.keras.Model):
         :return:
         """
 
-        scal_prods = [0.0 for _ in range(self.par.n_freq)]
+        scal_prods = [0.0 for _ in range(self.par['n_freq'])]
         # pre-calculate scalar prods for each freq:
-        for freq in range(self.par.n_freq):
+        for freq in range(self.par['n_freq']):
             p_freq = tf.expand_dims(ps[freq], axis=2)
             scal_prods[freq] = tf.matmul(tf.transpose(memories['b_freq'][freq], (0, 2, 1)), p_freq)
 
-        updates = [tf.zeros_like(ps[freq], dtype=self.precision) for freq in range(self.par.n_freq)]
+        updates = [tf.zeros_like(ps[freq], dtype=self.precision) for freq in range(self.par['n_freq'])]
         for freq in memories['attractor_freq_iterations'][it_num]:
             scal_prod_sum = tf.zeros_like(scal_prods[freq])
 
@@ -639,7 +646,7 @@ class TEM(tf.keras.Model):
 
         a, b = p - p_g, p + p_g
         e, f = None, None
-        if self.par.hebb_type == [[2], [2]] and p_x is not None:
+        if self.par['hebb_type'] == [[2], [2]] and p_x is not None:
             # Inverse
             e, f = p - p_x, p + p_x
 
@@ -664,12 +671,12 @@ class TEM(tf.keras.Model):
         indices = tf.expand_dims(tf.expand_dims(mem_num, axis=0), axis=0)
 
         # forget all past memories (sqrt as get multiplied by another memories)
-        # mems = tf.multiply(mems, tf.sqrt(self.scalings.forget * self.par.lambd))
+        # mems = tf.multiply(mems, tf.sqrt(self.scalings['forget'] * self.par['lambd']))
         # add new memory - clearly shouldn't have to do two transposes
         mems = tf.transpose(mems, [2, 0, 1])
-        # don't have to multiply by self.par.eta * self.scalings.h_l) here either, but I think more efficent here
+        # don't have to multiply by self.par['eta'] * self.scalings['h_l']) here either, but I think more efficent here
         mems = tf.tensor_scatter_nd_update(mems, indices,
-                                           tf.expand_dims(tf.sqrt(self.par.eta * self.scalings.h_l) * mem, axis=0))
+                                           tf.expand_dims(tf.sqrt(self.par['eta'] * self.scalings['h_l']) * mem, axis=0))
         mems = tf.transpose(mems, [1, 2, 0])
 
         return mems
@@ -679,7 +686,7 @@ class TEM(tf.keras.Model):
     def f_n(self, x):
         x_normed = []
         # apply normalisation to each frequency separately
-        for f in range(self.par.n_freq):
+        for f in range(self.par['n_freq']):
             # subtract mean and threshold
             x_demean = tf.nn.relu(x[f] - tf.reduce_mean(x[f], axis=1, keepdims=True))
             # l2 normalise
@@ -690,11 +697,11 @@ class TEM(tf.keras.Model):
     @model_utils.define_scope
     def apply_function_freqs(self, x, act, dim):
         if isinstance(x, list):
-            return [act(x[f], f) for f in range(self.par.n_freq)]
+            return [act(x[f], f) for f in range(self.par['n_freq'])]
         elif isinstance(x, tf.Tensor):
             xs = tf.split(value=x, num_or_size_splits=dim, axis=1)
             # apply activation to each frequency separately
-            xs = [act(xs[f], f) for f in range(self.par.n_freq)]
+            xs = [act(xs[f], f) for f in range(self.par['n_freq'])]
             return tf.concat(xs, axis=1)
         else:
             raise ValueError('in correct type given - ' + str(type(x)))
@@ -703,10 +710,10 @@ class TEM(tf.keras.Model):
     def activation(self, x, name):
         if name == 'g':
             act = self.f_g_freq
-            dim = self.par.n_grids_all
+            dim = self.par['n_grids_all']
         elif name == 'p':
             act = self.f_p_freq
-            dim = self.par.n_place_all
+            dim = self.par['n_place_all']
         else:
             raise ValueError('Name <' + name + '> not supported')
 
@@ -723,30 +730,30 @@ class TEM(tf.keras.Model):
     @model_utils.define_scope
     def threshold(self, g):
         # make this a softer threshold - i.e. shallow gradient past threshold?
-        between_thresh = tf.minimum(tf.maximum(g, self.par.thresh_min), self.par.thresh_max)
-        above_thresh = tf.maximum(g, self.par.thresh_max) - self.par.thresh_max
-        below_thresh = tf.minimum(g, self.par.thresh_min) - self.par.thresh_min
+        between_thresh = tf.minimum(tf.maximum(g, self.par['thresh_min']), self.par['thresh_max'])
+        above_thresh = tf.maximum(g, self.par['thresh_max']) - self.par['thresh_max']
+        below_thresh = tf.minimum(g, self.par['thresh_min']) - self.par['thresh_min']
 
-        return between_thresh + 0.01 * (above_thresh + below_thresh) if self.par.threshold else g
+        return between_thresh + 0.01 * (above_thresh + below_thresh) if self.par['threshold'] else g
 
     @model_utils.define_scope
     def init_mems(self, hebb_mat, hebb_mat_inv, new_mems):
         # prespecifying everything as tf is happier when all shapes are set beforehand
         # for some reason the memories end up being immutable if DotDict. So use normal dict here
         # COULD USE TENSORARRAYS HERE TOO
-        memories_dict = {'gen': {'max_attractor_its': self.par.max_attractor_its,
-                                 'r_f_f': self.par.R_f_F_,
-                                 'attractor_freq_iterations': self.par.attractor_freq_iterations,
+        memories_dict = {'gen': {'max_attractor_its': self.par['max_attractor_its'],
+                                 'r_f_f': self.par['R_f_F_'],
+                                 'attractor_freq_iterations': self.par['attractor_freq_iterations'],
                                  'attractor_matrix': hebb_mat,
-                                 'a': tf.zeros((self.batch_size, self.par.p_size, new_mems)),
-                                 'b': tf.zeros((self.batch_size, self.par.p_size, new_mems))
+                                 'a': tf.zeros((self.batch_size, self.par['p_size'], new_mems)),
+                                 'b': tf.zeros((self.batch_size, self.par['p_size'], new_mems))
                                  },
-                         'inf': {'max_attractor_its': self.par.max_attractor_its_inv,
-                                 'r_f_f': self.par.R_f_F_inv_,
-                                 'attractor_freq_iterations': self.par.attractor_freq_iterations_inv,
+                         'inf': {'max_attractor_its': self.par['max_attractor_its_inv'],
+                                 'r_f_f': self.par['R_f_F_inv_'],
+                                 'attractor_freq_iterations': self.par['attractor_freq_iterations_inv'],
                                  'attractor_matrix': hebb_mat_inv,
-                                 'a': tf.zeros((self.batch_size, self.par.p_size, new_mems)),
-                                 'b': tf.zeros((self.batch_size, self.par.p_size, new_mems))
+                                 'a': tf.zeros((self.batch_size, self.par['p_size'], new_mems)),
+                                 'b': tf.zeros((self.batch_size, self.par['p_size'], new_mems))
                                  }
                          }
 
@@ -758,16 +765,16 @@ class TEM(tf.keras.Model):
         # can streamline this. Don't need to make full dict again for example.
 
         mem_s = {'max_attractor_its': mems[gen_inf]['max_attractor_its'],
-                 'r_f_f': self.par.R_f_F_ if gen_inf == 'gen' else self.par.R_f_F_inv_,
-                 'attractor_freq_iterations': self.par.attractor_freq_iterations if gen_inf == 'gen' else
-                 self.par.attractor_freq_iterations_inv,
+                 'r_f_f': self.par['R_f_F_'] if gen_inf == 'gen' else self.par['R_f_F_inv_'],
+                 'attractor_freq_iterations': self.par['attractor_freq_iterations'] if gen_inf == 'gen' else
+                 self.par['attractor_freq_iterations_inv'],
                  'attractor_matrix': mems[gen_inf]['attractor_matrix'],
-                 'a_freq': tf.split(mems[gen_inf]['a'][:, :, :itnum], num_or_size_splits=self.par.n_place_all, axis=1),
-                 'b_freq': tf.split(mems[gen_inf]['b'][:, :, :itnum], num_or_size_splits=self.par.n_place_all, axis=1),
-                 'forget_vec': (self.scalings.forget * self.par.lambd) ** tf.reverse(
-                     tf.constant(np.arange(self.par.seq_len), dtype=self.precision, shape=(1, self.par.seq_len, 1))
+                 'a_freq': tf.split(mems[gen_inf]['a'][:, :, :itnum], num_or_size_splits=self.par['n_place_all'], axis=1),
+                 'b_freq': tf.split(mems[gen_inf]['b'][:, :, :itnum], num_or_size_splits=self.par['n_place_all'], axis=1),
+                 'forget_vec': (self.scalings['forget'] * self.par['lambd']) ** tf.reverse(
+                     tf.constant(np.arange(self.par['seq_len']), dtype=self.precision, shape=(1, self.par['seq_len'], 1))
                      [:, :itnum, :], axis=[1]),
-                 'forget_mat': (self.scalings.forget * self.par.lambd) ** tf.cast(tf.identity(itnum), self.precision)
+                 'forget_mat': (self.scalings['forget'] * self.par['lambd']) ** tf.cast(tf.identity(itnum), self.precision)
                  }
 
         return mem_s
@@ -782,11 +789,11 @@ class TEM(tf.keras.Model):
         self.scalings = inputs.scalings
         # get hebbian matrices
         # split into frequencies for hierarchical attractor - i.e. finish attractor early for low freq memories
-        hebb_mat = tf.split(inputs.hebb_mat, num_or_size_splits=self.par.n_place_all, axis=2)
-        hebb_mat_inv = tf.split(inputs.hebb_mat_inv, num_or_size_splits=self.par.n_place_all, axis=2)
+        hebb_mat = tf.split(inputs.hebb_mat, num_or_size_splits=self.par['n_place_all'], axis=2)
+        hebb_mat_inv = tf.split(inputs.hebb_mat_inv, num_or_size_splits=self.par['n_place_all'], axis=2)
 
         # Find how many new memories will be created in this forward pass - length of input sequence by default
-        new_mems = self.par.seq_len if new_mems is None else new_mems
+        new_mems = self.par['seq_len'] if new_mems is None else new_mems
         # Create memory and data dictionaries
         memories_dict = self.init_mems(hebb_mat, hebb_mat_inv, new_mems)
         variable_dict = self.init_vars()
@@ -801,7 +808,7 @@ class TEM(tf.keras.Model):
         Tensorflow annoying any wont deal with list appends with tf.range, so using TensorArray instead        
         """
         # Total number of variables collected: if not provided, default to the length of the backprop sequence
-        seq_len = self.par.seq_len if seq_len is None else seq_len
+        seq_len = self.par['seq_len'] if seq_len is None else seq_len
 
         # Create dictionary with all possible data for saving
         vars_dict = model_utils.DotDict(
@@ -864,7 +871,7 @@ class TEM(tf.keras.Model):
         Precompute transitions for provided tensor of directions
         """
         # If sequence length is not specified: use full sequence length from parameters
-        seq_len = self.par.seq_len if seq_len is None else seq_len
+        seq_len = self.par['seq_len'] if seq_len is None else seq_len
         # alternatively could pre-compute all types of actions and then use control flow
         ta_mat = tf.TensorArray(self.precision, size=seq_len, clear_after_read=False,
                                 name='t_mat' + ('' if name is None else name))
@@ -999,7 +1006,7 @@ def compute_losses(model_inputs, data, trainable_variables, par):
         lx_gt += tf.reduce_sum(lx_gt_ * s_vis * x_mult) * norm
         lp += tf.reduce_sum(lp_ * s_vis) * scalings.temp * norm
         lg += tf.reduce_sum(lg_ * s_vis) * scalings.temp * norm
-        lp_x += tf.reduce_sum(lp_x_ * s_vis) * scalings.p2g_use * scalings.temp * norm
+        lp_x += tf.reduce_sum(lp_x_ * s_vis) * scalings['p2g_use'] * scalings.temp * norm
 
         lg_reg += tf.reduce_sum(lg_reg_ * s_vis) * par.g_reg_pen * scalings.g_cell_reg * norm
         lp_reg += tf.reduce_sum(lp_reg_ * s_vis) * par.p_reg_pen * scalings.p_cell_reg * norm

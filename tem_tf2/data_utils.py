@@ -515,7 +515,7 @@ def save_model_outputs(model, model_utils_, train_i, save_path, pars):
         scalings = parameters.get_scaling_parameters(train_i, pars)
         inputs_test_tf = model_utils_.inputs_2_tf(test_dict.inputs, test_dict.hebb, scalings, pars.n_freq)
         # Do model forward pass step
-        variables_test, re_input_test = model(inputs_test_tf, training=False)
+        variables_test, re_input_test = model(inputs=inputs_test_tf, training=False)
         re_input_test = model_utils_.tf2numpy(re_input_test)
 
         test_dict.variables.gs, test_dict.variables.x_s, test_dict.hebb.a_rnn, test_dict.hebb.a_rnn_inv = \

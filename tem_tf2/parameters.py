@@ -83,7 +83,7 @@ def default_params(width=None, height=None, world_type=None, batch_size=None):
                                        combins_table(params.s_size_comp, 2), params.s_size_comp)
 
     # TRAINING params
-    params.train_iters = 2000000
+    params.train_iters = 1_000 #from 2_000_000
     params.train_on_visited_states_only = True
     params.learning_rate_max = 9.4e-4
     params.learning_rate_min = 8e-5
@@ -578,8 +578,10 @@ def onehot2twohot(onehot, table, compress_size):
     for i in range(np.shape(onehot)[2]):
         vals = np.argmax(onehot[:, :, i], 1)
         for b in range(np.shape(onehot)[0]):
-            twohot[b, :, i] = table[vals[int(b)]]
-
+            if vals[int(b)] < len(table):
+                twohot[b, :, i] = table[vals[int(b)]]
+            else:
+                raise IndexError("Index out of range in onehot2twohot function")
     return twohot
 
 

@@ -55,8 +55,8 @@ debug = False
 profile = False
 tf.config.run_functions_eagerly(debug or debug_data or not params.graph_mode)
 if profile or debug:
-    params.train_iters = 11
-    params.save_walk = 1
+    params.train_iters = 5
+    params.save_walk = 2
 
 
 @tf.function  # (experimental_compile=True)
@@ -64,7 +64,7 @@ def train_step(model_, model_inputs_):
     # everything entering this function should already be a tensor!
     with tf.GradientTape() as tape:
         print('start_model')
-        variables_, re_input_ = model_(model_inputs_, training=True)
+        variables_, re_input_ = model_(inputs=model_inputs_, training=True)  # Ensure 'inputs' is passed as a keyword argument
         # collate inputs for model
         losses_ = tem.compute_losses(model_inputs_, variables_, model_.trainable_variables, params)
     if optimise:
@@ -78,7 +78,7 @@ def train_step(model_, model_inputs_):
 
 @tf.function  # (experimental_compile=True)
 def test_step(model_, model_inputs_):
-    variables_, re_input_ = model_(model_inputs_, training=False)
+    variables_, re_input_ = model_(inputs=model_inputs_, training=False)  # Ensure 'inputs' is passed as a keyword argument
     return variables_, re_input_
 
 
@@ -166,14 +166,14 @@ for train_i in range(params.train_iters):
         # data_utils.save_model_outputs(test_step, train_i, save_path, params)
 
         # save model checkpoint
-        model.save_weights(model_path + '/tem_' + str(train_i))
+        model.save_weights(model_path + '/tem_' + str(train_i)  + '.weights.h5')
         logger_sums.info("save data time {:.2f}, train_i={:.2f}, total_steps={:.2f}".format(time.time() - start_time,
                                                                                             train_i,
                                                                                             train_i * params.seq_len))
 
     # save model
-    # if train_i % params.save_model == 0:
-    #    model.save(model_path + '/tem_' + str(train_i))
+    if train_i % params.save_model == 0:
+       model.save(model_path + '/tem_' + str(train_i) + '.keras')
 if profile:
     tf.profiler.experimental.stop()
 print('Finished training')
