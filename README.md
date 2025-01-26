@@ -1,3 +1,8 @@
+# This is a Fork
+This is a fork of the original repository to attempt to re-implement the paper. Unfortunately, TensorFlow stopped working for some reason. So this was unsuccessful. We ended up using the PyTorch implementation. 
+
+# Original Repo ReadMe:
+
 <!-- PROJECT LOGO -->
 <br />
 <p align="center">
